@@ -16,9 +16,14 @@
 
 package org.springframework.samples.petclinic.owner;
 
+import static org.hamcrest.Matchers.containsString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
@@ -56,13 +61,15 @@ class VisitControllerTests {
 	@MockitoBean
 	private OwnerRepository owners;
 
+	private Owner owner;
+
 	@BeforeEach
 	void init() {
-		Owner owner = new Owner();
+		this.owner = new Owner();
 		Pet pet = new Pet();
-		owner.addPet(pet);
+		this.owner.addPet(pet);
 		pet.setId(TEST_PET_ID);
-		given(this.owners.findById(TEST_OWNER_ID)).willReturn(Optional.of(owner));
+		given(this.owners.findById(TEST_OWNER_ID)).willReturn(Optional.of(this.owner));
 	}
 
 	@Test
@@ -81,6 +88,97 @@ class VisitControllerTests {
 				.param("description", "Visit Description"))
 			.andExpect(status().is3xxRedirection())
 			.andExpect(view().name("redirect:/owners/{ownerId}"));
+
+		verify(this.owners).save(this.owner);
+	}
+
+	@Test
+	void processNewVisitFormRejectsDuplicateDateWithDifferentDescription() throws Exception {
+		LocalDate date = LocalDate.now().plusDays(2);
+		addExistingVisit(TEST_PET_ID, date, "Original description");
+
+		mockMvc
+			.perform(post("/owners/{ownerId}/pets/{petId}/visits/new", TEST_OWNER_ID, TEST_PET_ID)
+				.param("date", date.toString())
+				.param("description", "Different description"))
+			.andExpect(status().isOk())
+			.andExpect(view().name("pets/createOrUpdateVisitForm"))
+			.andExpect(model().attributeHasFieldErrorCode("visit", "date", "duplicate.visitDate"))
+			.andExpect(content().string(containsString("A visit is already booked for this pet on this date")));
+
+		verify(this.owners, never()).save(any(Owner.class));
+	}
+
+	@Test
+	void processNewVisitFormRejectsDuplicateDateWithSameDescription() throws Exception {
+		LocalDate date = LocalDate.now().plusDays(2);
+		addExistingVisit(TEST_PET_ID, date, "Visit description");
+
+		mockMvc
+			.perform(post("/owners/{ownerId}/pets/{petId}/visits/new", TEST_OWNER_ID, TEST_PET_ID)
+				.param("date", date.toString())
+				.param("description", "Visit description"))
+			.andExpect(status().isOk())
+			.andExpect(model().attributeHasFieldErrorCode("visit", "date", "duplicate.visitDate"))
+			.andExpect(view().name("pets/createOrUpdateVisitForm"));
+
+		verify(this.owners, never()).save(any(Owner.class));
+	}
+
+	@Test
+	void processNewVisitFormAllowsAnotherDateForSamePet() throws Exception {
+		LocalDate bookedDate = LocalDate.now().plusDays(2);
+		addExistingVisit(TEST_PET_ID, bookedDate, "Original description");
+
+		mockMvc
+			.perform(post("/owners/{ownerId}/pets/{petId}/visits/new", TEST_OWNER_ID, TEST_PET_ID)
+				.param("date", bookedDate.plusDays(1).toString())
+				.param("description", "Next visit"))
+			.andExpect(status().is3xxRedirection())
+			.andExpect(view().name("redirect:/owners/{ownerId}"));
+
+		verify(this.owners).save(this.owner);
+	}
+
+	@Test
+	void processNewVisitFormAllowsSameDateForDifferentPet() throws Exception {
+		Pet anotherPet = new Pet();
+		this.owner.addPet(anotherPet);
+		anotherPet.setId(TEST_PET_ID + 1);
+		LocalDate date = LocalDate.now().plusDays(2);
+		addExistingVisit(anotherPet.getId(), date, "Other pet visit");
+
+		mockMvc
+			.perform(post("/owners/{ownerId}/pets/{petId}/visits/new", TEST_OWNER_ID, TEST_PET_ID)
+				.param("date", date.toString())
+				.param("description", "This pet visit"))
+			.andExpect(status().is3xxRedirection())
+			.andExpect(view().name("redirect:/owners/{ownerId}"));
+
+		verify(this.owners).save(this.owner);
+	}
+
+	@Test
+	void processNewVisitFormKeepsInvalidDateBindingError() throws Exception {
+		addExistingVisit(TEST_PET_ID, LocalDate.now().plusDays(1), "Original description");
+
+		mockMvc
+			.perform(post("/owners/{ownerId}/pets/{petId}/visits/new", TEST_OWNER_ID, TEST_PET_ID)
+				.param("date", "invalid-date")
+				.param("description", "Visit description"))
+			.andExpect(status().isOk())
+			.andExpect(model().attributeHasFieldErrors("visit", "date"))
+			.andExpect(view().name("pets/createOrUpdateVisitForm"));
+
+		verify(this.owners, never()).save(any(Owner.class));
+	}
+
+	private void addExistingVisit(int petId, LocalDate date, String description) {
+		Visit visit = new Visit();
+		visit.setId(99);
+		visit.setDate(date);
+		visit.setDescription(description);
+		this.owner.getPet(petId).addVisit(visit);
 	}
 
 	@Test
@@ -104,6 +202,8 @@ class VisitControllerTests {
 			.andExpect(model().attributeHasFieldErrorCode("visit", "date", "typeMismatch.visitDate"))
 			.andExpect(status().isOk())
 			.andExpect(view().name("pets/createOrUpdateVisitForm"));
+
+		verify(this.owners, never()).save(any(Owner.class));
 	}
 
 	@Test
